@@ -9,7 +9,7 @@ import {
 } from '../../../../Command';
 import SpoCommand from '../../SpoCommand';
 import Utils from '../../../../Utils';
-import Auth from '../../../../Auth';
+import { Auth } from '../../../../Auth';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ContextInfo } from '../../spo';
@@ -32,6 +32,14 @@ interface Options extends GlobalOptions {
   publish?: boolean;
   publishComment?: string;
   values?: string;
+}
+
+interface FieldValue {
+  ErrorMessage: string;
+  FieldName: string;
+  FieldValue: any;
+  HasException: boolean;
+  ItemId: number;
 }
 
 class SpoFileAddCommand extends SpoCommand {
@@ -182,8 +190,11 @@ class SpoFileAddCommand extends SpoCommand {
             cmd.log(`Add List Item values for file ${fileName}`);
           }
 
-          let body = this.buildBody(args.options.values);
-          cmd.log(JSON.stringify(body));
+          //let body = this.buildBody(args.options.values);
+          const requestBody: any = {
+            formValues: this.mapRequestBody(args.options)
+          };
+          cmd.log(JSON.stringify(requestBody));
 
           // Checkin the existing file with given comment
           const requestOptions: any = {
@@ -196,7 +207,7 @@ class SpoFileAddCommand extends SpoCommand {
               'content-type': 'application/json;odata=verbose',
               accept: 'application/json;odata=verbose'
             }),
-            body: JSON.stringify(body)
+            body: requestBody
           };
           
           return request.post(requestOptions);
@@ -316,6 +327,32 @@ class SpoFileAddCommand extends SpoCommand {
     });
 
     return itemPayload;
+  }
+
+  private mapRequestBody(options: Options): any {
+    const requestBody: any = [];
+    const excludeOptions: string[] = [
+      'webUrl',
+      'folder',
+      'path',
+      'contentType',
+      'checkOut',
+      'checkInComment',
+      'approve',
+      'approveComment',
+      'publish',
+      'publishComment',
+      'debug',
+      'verbose'
+    ];
+
+    Object.keys(options).forEach(key => {
+      if (excludeOptions.indexOf(key) === -1) {
+        requestBody.push({ FieldName: key, FieldValue: (<any>options)[key] });
+      }
+    });
+
+    return requestBody;
   }
 
   public options(): CommandOption[] {
