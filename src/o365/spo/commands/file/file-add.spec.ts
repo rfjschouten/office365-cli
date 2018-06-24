@@ -16,6 +16,59 @@ describe(commands.FILE_ADD, () => {
   let cmdInstanceLogSpy: sinon.SinonSpy;
   let trackEvent: any;
   let telemetry: any;
+
+  const expectedTitle = `List Item 1`;
+
+  const expectedId = 147;
+  let actualId = 0;
+
+  const expectedContentType = 'Item';
+  let actualContentType = '';
+
+  let postFakes = (opts: any) => {
+    if (opts.url.indexOf('/common/oauth2/token') > -1) {
+      return Promise.resolve('abc');
+    }
+
+    if (opts.url.indexOf('/_api/contextinfo') > -1) {
+      return Promise.resolve({
+        FormDigestValue: 'abc'
+      });
+    }
+    if (opts.url.indexOf('ValidateUpdateListItem') > -1) {
+
+      const bodyString = JSON.stringify(opts.body);
+      const ctMatch = bodyString.match(/\"?FieldName\"?:\s*\"?ContentType\"?,\s*\"?FieldValue\"?:\s*\"?(\w*)\"?/i);
+      actualContentType = ctMatch ? ctMatch[1] : "";
+      if (bodyString.indexOf("fail updating me") > -1) return Promise.resolve({ value: [{ErrorMessage: 'failed updating'}] })
+      return Promise.resolve({ value: [ { ItemId: expectedId }] });
+
+    }
+    return Promise.reject('Invalid request');
+  }
+
+  let getFakes = (opts: any) => {
+    if (opts.url.indexOf('contenttypes') > -1) {
+      return Promise.resolve({ value: [ {Id: { StringValue: expectedContentType }, Name: "Item" } ] });
+    }
+    if (opts.url.indexOf('/items(') > -1) {
+      actualId = opts.url.match(/\/items\((\d+)\)/i)[1];
+      return Promise.resolve(
+        {
+          "Attachments": false,
+          "AuthorId": 3,
+          "ContentTypeId": "0x0100B21BD271A810EE488B570BE49963EA34",
+          "Created": "2018-03-15T10:43:10Z",
+          "EditorId": 3,
+          "GUID": "ea093c7b-8ae6-4400-8b75-e2d01154dffc",
+          "ID": actualId,
+          "Modified": "2018-03-15T10:52:10Z",
+          "Title": expectedTitle,
+        }
+      );
+    }
+    return Promise.reject('Invalid request');
+  }
   // let stubAuth: any = () => {
   //   sinon.stub(request, 'post').callsFake((opts) => {
   //     if (opts.url.indexOf('/common/oauth2/token') > -1) {
@@ -29,10 +82,10 @@ describe(commands.FILE_ADD, () => {
   before(() => {
     sinon.stub(auth, 'restoreAuth').callsFake(() => Promise.resolve());
     sinon.stub(auth, 'getAccessToken').callsFake(() => { return Promise.resolve('ABC'); });
-    sinon.stub(command as any, 'getRequestDigest').callsFake(() => { return { FormDigestValue: 'abc' }; });
     trackEvent = sinon.stub(appInsights, 'trackEvent').callsFake((t) => {
       telemetry = t;
     });
+
   });
 
   beforeEach(() => {
@@ -59,8 +112,7 @@ describe(commands.FILE_ADD, () => {
     Utils.restore([
       appInsights.trackEvent,
       auth.getAccessToken,
-      auth.restoreAuth,
-      request.post
+      auth.restoreAuth
     ]);
   });
 
@@ -621,6 +673,150 @@ describe(commands.FILE_ADD, () => {
   //   });
   // });
 
+  it('fails to update a list item when \'fail me\' values are used', (done) => {
+
+    actualId = 0;
+    
+    sinon.stub(request, 'get').callsFake(getFakes);
+    sinon.stub(request, 'post').callsFake(postFakes);
+
+    auth.site = new Site();
+    auth.site.connected = true;
+    auth.site.url = 'https://contoso.sharepoint.com';
+    cmdInstance.action = command.action();
+
+    let options: any = { 
+      debug: false, 
+      webUrl: 'https://contoso.sharepoint.com/sites/project-x', 
+      folder: "folder",
+      path: "path"
+    }
+
+    cmdInstance.action({ options: options }, () => {
+
+      try {
+        assert.equal(actualId, 0);
+        done();
+      }
+      catch (e) {
+        done(e);
+      }
+      finally {
+        Utils.restore(request.get);
+        Utils.restore(request.post);
+      }
+    });
+    
+  });
+
+  it('returns listItemInstance object when list item is updated with correct values', (done) => {
+
+    sinon.stub(request, 'get').callsFake(getFakes);
+    sinon.stub(request, 'post').callsFake(postFakes);
+
+    auth.site = new Site();
+    auth.site.connected = true;
+    auth.site.url = 'https://contoso.sharepoint.com';
+    cmdInstance.action = command.action();
+
+    command.allowUnknownOptions();
+
+    let options: any = { 
+      debug: true, 
+      webUrl: 'https://contoso.sharepoint.com/sites/project-x', 
+      folder: "folder",
+      path: "path",
+      contentType: "Document"
+    }
+
+    cmdInstance.action({ options: options }, () => {
+
+      try {
+        assert.equal(actualId, expectedId);
+        done();
+      }
+      catch (e) {
+        done(e);
+      }
+      finally {
+        Utils.restore(request.get);
+        Utils.restore(request.post);
+      }
+    });
+    
+  });
+
+  it('attempts to update the listitem with the contenttype of \'Item\' when content type option \'Item\' is specified', (done) => {
+
+    sinon.stub(request, 'get').callsFake(getFakes);
+    sinon.stub(request, 'post').callsFake(postFakes);
+
+    auth.site = new Site();
+    auth.site.connected = true;
+    auth.site.url = 'https://contoso.sharepoint.com';
+    cmdInstance.action = command.action();
+
+    let options: any = { 
+      debug: false, 
+      webUrl: 'https://contoso.sharepoint.com/sites/project-y', 
+      contentType: 'Item',
+      folder: "folder",
+      path: "path"
+    }
+
+    cmdInstance.action({ options: options }, () => {
+
+      try {
+        assert(expectedContentType == actualContentType);
+        done();
+      }
+      catch (e) {
+        done(e);
+      }
+      finally {
+        Utils.restore(request.get);
+        Utils.restore(request.post);
+      }
+    });
+
+  });
+
+  it('attempts to update the listitem with the contenttype of \'Item\' when content type option 0x01 is specified', (done) => {
+
+    sinon.stub(request, 'get').callsFake(getFakes);
+    sinon.stub(request, 'post').callsFake(postFakes);
+
+    auth.site = new Site();
+    auth.site.connected = true;
+    auth.site.url = 'https://contoso.sharepoint.com';
+    cmdInstance.action = command.action();
+
+    let options: any = { 
+      debug: true, 
+      webUrl: 'https://contoso.sharepoint.com/sites/project-y', 
+      contentType: expectedContentType,
+      folder: "folder",
+      path: "path"
+    }
+
+    cmdInstance.action({ options: options }, () => {
+
+      try {
+        assert(expectedContentType == actualContentType);
+        done();
+      }
+      catch (e) {
+        done(e);
+      }
+      finally {
+        Utils.restore(request.get);
+        Utils.restore(request.post);
+      }
+    });
+
+  });
+
+
   it('supports debug mode', () => {
     const options = (command.options() as CommandOption[]);
     let containsDebugOption = false;
@@ -655,61 +851,6 @@ describe(commands.FILE_ADD, () => {
 
   it('passes validation if the webUrl option is a valid SharePoint site URL', () => {
     const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b' } });
-    assert.equal(actual, true);
-  });
-
-  it('fails validation if the id option is not a valid GUID', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: '12345' } });
-    assert.notEqual(actual, true);
-  });
-
-  it('passes validation if the id option is a valid GUID', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b' } });
-    assert(actual);
-  });
-
-  it('fails validation if the id or url option not specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com' } });
-    assert.notEqual(actual, true);
-  });
-
-  it('fails validation if both id and url options are specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b', url: '/sites/project-x/documents' } });
-    assert.notEqual(actual, true);
-  });
-
-  it('fails validation if both path and fileName options are not specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b', asFile: true } });
-    assert.notEqual(actual, true);
-  });
-
-  it('fails validation if asFile and asListItem specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b', path: 'abc', asFile: true, asListItem: true } });
-    assert.notEqual(actual, true);
-  });
-
-  it('fails validation if asFile and asString specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b', path: 'abc', asFile: true, asString: true } });
-    assert.notEqual(actual, true);
-  });
-
-  it('fails validation if asListItem and asString specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b', asListItem: true, asString: true } });
-    assert.notEqual(actual, true);
-  });
-
-  it('passes validation if only asFile specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b', path: 'abc', asFile: true } });
-    assert.equal(actual, true);
-  });
-
-  it('passes validation if only asListItem specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b', asListItem: true } });
-    assert.equal(actual, true);
-  });
-
-  it('passes validation if only asString specified', () => {
-    const actual = (command.validate() as CommandValidate)({ options: { webUrl: 'https://contoso.sharepoint.com', id: 'f09c4efe-b8c0-4e89-a166-03418661b89b', asString: true } });
     assert.equal(actual, true);
   });
 
@@ -757,6 +898,8 @@ describe(commands.FILE_ADD, () => {
     cmdInstance.action({
       options: {
         webUrl: "https://contoso.sharepoint.com",
+        folder: "folder",
+        path: "path",
         debug: false
       }
     }, () => {

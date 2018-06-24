@@ -31,18 +31,21 @@ interface Options extends GlobalOptions {
   approveComment?: string;
   publish?: boolean;
   publishComment?: string;
-  values?: string;
 }
 
-interface FieldValue {
-  ErrorMessage: string;
-  FieldName: string;
-  FieldValue: any;
-  HasException: boolean;
-  ItemId: number;
-}
+// interface FieldValue {
+//   ErrorMessage: string;
+//   FieldName: string;
+//   FieldValue: any;
+//   HasException: boolean;
+//   ItemId: number;
+// }
 
 class SpoFileAddCommand extends SpoCommand {
+  public allowUnknownOptions(): boolean | undefined {
+    return true;
+  }
+
   public get name(): string {
     return commands.FILE_ADD;
   }
@@ -60,7 +63,6 @@ class SpoFileAddCommand extends SpoCommand {
     telemetryProps.approveComment = (!(!args.options.approveComment)).toString();
     telemetryProps.publish = args.options.publish || false;
     telemetryProps.publishComment = (!(!args.options.publishComment)).toString();
-    telemetryProps.values = (!(!args.options.values)).toString();
     return telemetryProps;
   }
 
@@ -71,6 +73,7 @@ class SpoFileAddCommand extends SpoCommand {
     const fullPath: string = path.resolve(args.options.path);
     const fileName: string = path.basename(fullPath);
     let fileExists: boolean = true;
+    let contentTypeName: string = '';
 
     if (this.debug) {
       cmd.log(`Retrieving access token for ${resource}...`);
@@ -185,35 +188,133 @@ class SpoFileAddCommand extends SpoCommand {
         return request.post(requestOptions);
       })
       .then((res: any): request.RequestPromise | Promise<void> => {
-        if (args.options.values) {
+        if (args.options.contentType) {
           if (this.verbose) {
-            cmd.log(`Add List Item values for file ${fileName}`);
+            cmd.log(`Getting list id in order to get its available content types afterwards...`);
           }
 
-          //let body = this.buildBody(args.options.values);
-          const requestBody: any = {
-            formValues: this.mapRequestBody(args.options)
-          };
-          cmd.log(JSON.stringify(requestBody));
-
-          // Checkin the existing file with given comment
           const requestOptions: any = {
-            url: `${args.options.webUrl}/_api/web/GetFolderByServerRelativeUrl('${encodeURIComponent(args.options.folder)}')/Files('${encodeURIComponent(fileName)}')/ListItemAllFields`,
+            url: `${args.options.webUrl}/_api/web/GetFolderByServerRelativeUrl('${encodeURIComponent(args.options.folder)}')/Files('${encodeURIComponent(fileName)}')/ListItemAllFields/ParentList?$Select=Id`,
             headers: Utils.getRequestHeaders({
               authorization: `Bearer ${siteAccessToken}`,
-              'X-RequestDigest': requestDigest,
-              'X-HTTP-Method': 'PATCH',
-              'IF-MATCH': '*',
-              'content-type': 'application/json;odata=verbose',
-              accept: 'application/json;odata=verbose'
+              'accept': 'application/json;odata=nometadata'
             }),
-            body: requestBody
+            json: true
           };
-          
-          return request.post(requestOptions);
+
+          if (this.debug) {
+            cmd.log('Executing web request...');
+            cmd.log(requestOptions);
+            cmd.log('');
+          }
+
+          return request.get(requestOptions);
         }
 
         return Promise.resolve();
+      })
+      .then((res: any): request.RequestPromise | Promise<void> => {
+        if (args.options.contentType) {
+          if (this.debug) {
+            cmd.log('list id response...');
+            cmd.log(res.Id);
+          }
+          
+          if (this.verbose) {
+            cmd.log(`Getting content types for list...`);
+          }
+
+          const requestOptions: any = {
+            url: `${args.options.webUrl}/_api/web/lists('${res.Id}')/contenttypes?$select=Name,Id`,
+            headers: Utils.getRequestHeaders({
+              authorization: `Bearer ${siteAccessToken}`,
+              'accept': 'application/json;odata=nometadata'
+            }),
+            json: true
+          };
+
+          if (this.debug) {
+            cmd.log('Executing web request...');
+            cmd.log(requestOptions);
+            cmd.log('');
+          }
+
+          return request.get(requestOptions);
+        }
+
+        return Promise.resolve();
+      })
+      .then((response: any): request.RequestPromise | Promise<void> => {
+        if (args.options.contentType) {
+
+          if (this.debug) {
+            cmd.log('content type lookup response...');
+            cmd.log(response);
+          }
+
+          const foundContentType = response.value.filter((ct: any) => {
+            const contentTypeMatch: boolean = ct.Id.StringValue === args.options.contentType || ct.Name === args.options.contentType;
+
+            if (this.debug) {
+              cmd.log(`Checking content type value [${ct.Name}]: ${contentTypeMatch}`);
+            }
+
+            return contentTypeMatch;
+          });
+
+          if (this.debug) {
+            cmd.log('content type filter output...');
+            cmd.log(foundContentType);
+          }
+
+          if (foundContentType.length > 0) {
+            contentTypeName = foundContentType[0].Name;
+          }
+
+          // After checking for content types, throw an error if the name is blank
+          if (!contentTypeName || contentTypeName === '') {
+            return Promise.reject(`Specified content type '${args.options.contentType}' doesn't exist on the target list`);
+          }
+
+          if (this.debug) {
+            cmd.log(`using content type name: ${contentTypeName}`);
+          }
+        }
+
+        if (this.verbose) {
+          cmd.log(`Add List Item values for file ${fileName}`);
+        }
+
+        const requestBody: any = {
+          formValues: this.mapRequestBody(args.options),
+          bNewDocumentUpdate: true
+        };
+
+        if (args.options.contentType && contentTypeName !== '') {
+          if (this.debug) {
+            cmd.log(`Specifying content type name [${contentTypeName}] in request body`);
+          }
+
+          requestBody.formValues.push({
+            FieldName: 'ContentType',
+            FieldValue: contentTypeName
+          });
+        }
+
+        cmd.log(JSON.stringify(requestBody));
+
+        // Checkin the existing file with given comment
+        const requestOptions: any = {
+          url: `${args.options.webUrl}/_api/web/GetFolderByServerRelativeUrl('${encodeURIComponent(args.options.folder)}')/Files('${encodeURIComponent(fileName)}')/ListItemAllFields/ValidateUpdateListItem()`,
+          headers: Utils.getRequestHeaders({
+            authorization: `Bearer ${siteAccessToken}`,
+            'accept': 'application/json;odata=nometadata'
+          }),
+          body: requestBody,
+          json: true
+        };
+
+        return request.post(requestOptions);
       })
       .then((res: any): request.RequestPromise | Promise<void> => {
         if (fileExists && args.options.checkOut) {
@@ -283,54 +384,9 @@ class SpoFileAddCommand extends SpoCommand {
       }, (err: any): void => this.handleRejectedODataJsonPromise(err, cmd, cb));
   }
 
-  /**
-   * splits a values string separated by ; and for each value it will get its key/values seperated by =
-   * example values string: InternalFieldName1=value1;InternalFieldName2=value2;InternalFieldName3=value3
-   * above string should output a body object {"InternalFieldName1":"value1","InternalFieldName2":"value2","InternalFieldName3":"value3"}
-   */
-  private buildBody(values: string): any {
-    let body = new Map<string, any>();
-    
-    const valuesArray: string[] = values.split(';');
-    valuesArray.map(property => {
-      property.trim();
-      const propertyArray: string[] = property.split('=');
-      body.set(propertyArray[0], propertyArray[1]);
-    });
-    //const itemArray: string[] = valuesArray.split(';').map(v => v.trim());
-    
-    // if (values.length > 0) {
-    //   if (values.indexOf(';') > 0) {
-    //     let valuesArray = values.split(';');
-    //     valuesArray.forEach(value => {
-    //       if (value.indexOf('=') > 0) {
-    //         let valueArray = value.split('=');
-    //         //valueArray.forEach(valueElements => {
-    //           body.set(valueArray[0], valueArray[1]);
-    //         //});
-    //       }
-    //     });
-    //   }
-    //   else {
-    //     if (values.indexOf('=') > 0){
-    //       let valueElements = values.split('=');
-    //       body.set(valueElements[0], valueElements[1]);
-    //     }
-    //   }
-    // }
-
-    var itemPayload: any = {};
-    itemPayload['__metadata'] = {'type':'SP.ListItem'};
-    
-    body.forEach((value: any, key: string) => {
-      itemPayload[key] = value;
-    });
-
-    return itemPayload;
-  }
-
   private mapRequestBody(options: Options): any {
     const requestBody: any = [];
+    //const requestBody1: any = {};
     const excludeOptions: string[] = [
       'webUrl',
       'folder',
@@ -348,7 +404,7 @@ class SpoFileAddCommand extends SpoCommand {
 
     Object.keys(options).forEach(key => {
       if (excludeOptions.indexOf(key) === -1) {
-        requestBody.push({ FieldName: key, FieldValue: (<any>options)[key] });
+          requestBody.push({FieldName: key, FieldValue: (<any>options)[key].toString() });
       }
     });
 
@@ -396,10 +452,6 @@ class SpoFileAddCommand extends SpoCommand {
       {
         option: '--publishComment [publishComment]',
         description: 'Comment to set when publishing the file'
-      },
-      {
-        option: '--values [values]',
-        description: 'this command should allow using unknown properties. Each property corresponds to the list item field that should be set when uploading the file.'
       }
     ];
 
@@ -416,6 +468,10 @@ class SpoFileAddCommand extends SpoCommand {
       const isValidSharePointUrl: boolean | string = SpoCommand.isValidSharePointUrl(args.options.webUrl);
       if (isValidSharePointUrl !== true) {
         return isValidSharePointUrl;
+      }
+
+      if (args.options.path && !fs.existsSync(args.options.path)) {
+        return 'Specified path of the file to add does not exits';
       }
 
       // if (args.options.id) {
